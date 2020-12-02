@@ -67,9 +67,9 @@ namespace ServiceControl.Recoverability
                     {
                         Log.Info($"Batch {stagingBatch.Id} with {stagedMessages} messages staged and {skippedMessages} skipped ready to be forwarded.");
                         await session.StoreAsync(new RetryBatchNowForwarding
-                            {
-                                RetryBatchId = stagingBatch.Id
-                            }, RetryBatchNowForwarding.Id)
+                        {
+                            RetryBatchId = stagingBatch.Id
+                        }, RetryBatchNowForwarding.Id)
                             .ConfigureAwait(false);
                     }
 
@@ -188,12 +188,24 @@ namespace ServiceControl.Recoverability
         {
             var stagingId = Guid.NewGuid().ToString();
 
-            var failedMessageRetryDocs = await session.LoadAsync<FailedMessageRetry>(stagingBatch.FailureRetries).ConfigureAwait(false);
+            var failedMessageRetryDocs
+                = await session.LoadAsync<FailedMessageRetry>(stagingBatch.FailureRetries).ConfigureAwait(false);
 
             var failedMessageRetriesById = failedMessageRetryDocs.Values
                 .Where(r => r != null && r.RetryBatchId == stagingBatch.Id)
                 .Distinct(FailedMessageEqualityComparer.Instance)
                 .ToDictionary(x => x.FailedMessageId, x => x);
+
+            if (Log.IsDebugEnabled)
+            {
+                var removedDocuments = failedMessageRetryDocs.Values
+                    .Where(x => x != null && !failedMessageRetriesById.ContainsKey(x.FailedMessageId));
+                foreach (var retryDoc in removedDocuments)
+                {
+                    Log.Debug($"Removing message {retryDoc.FailedMessageId} from batch {stagingBatch.Id} because it is already part of another batch {retryDoc.RetryBatchId}");
+                }
+            }
+
 
             foreach (var failedMessageRetry in failedMessageRetryDocs)
             {
@@ -356,7 +368,7 @@ namespace ServiceControl.Recoverability
             {
                 using (var session = store.OpenSession())
                 {
-                    session.Advanced.Patch<FailedMessageRetry, int>(message.Id, x => x.StageAttempts, message.StageAttempts + 1 );
+                    session.Advanced.Patch<FailedMessageRetry, int>(message.Id, x => x.StageAttempts, message.StageAttempts + 1);
                     session.SaveChanges();
                 }
             }
