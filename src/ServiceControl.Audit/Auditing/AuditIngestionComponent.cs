@@ -15,6 +15,8 @@ namespace ServiceControl.Audit.Auditing
     using NServiceBus.Logging;
     using NServiceBus.Transport;
     using Raven.Client.Documents;
+    using Raven.Client.Documents.Linq;
+    using Raven.Client.Exceptions;
 
     class AuditIngestionComponent
     {
@@ -31,6 +33,8 @@ namespace ServiceControl.Audit.Auditing
         Meter batchSizeMeter;
         Meter batchDurationMeter;
         static readonly long frequencyInMilliseconds = Stopwatch.Frequency / 1000;
+        private bool shuttingDown;
+        private AuditContextMetadataEnricher metadataEnricher;
 
         public AuditIngestionComponent(
             Metrics metrics,
@@ -59,6 +63,8 @@ namespace ServiceControl.Audit.Auditing
 
             ingestor = new AuditIngestor(auditPersister, settings);
 
+            AuditMessageForwarder forwarder = new AuditMessageForwarder(settings);
+
             var ingestion = new AuditIngestion(
                 async (messageContext, dispatcher) =>
                 {
@@ -69,8 +75,23 @@ namespace ServiceControl.Audit.Auditing
 
                     await channel.Writer.WriteAsync(messageContext).ConfigureAwait(false);
                     await taskCompletionSource.Task.ConfigureAwait(false);
+
+                    if (settings.ForwardAuditMessages)
+                    {
+                        await forwarder.Forward(messageContext, dispatcher)
+                            .ConfigureAwait(false);
+                    }
                 },
-                dispatcher => ingestor.Initialize(dispatcher),
+                async dispatcher =>
+                {
+                    if (settings.ForwardAuditMessages)
+                    {
+                        await forwarder.VerifyCanReachForwardingAddress(dispatcher)
+                            .ConfigureAwait(false);
+                    }
+                    await ingestor.Initialize(dispatcher)
+                        .ConfigureAwait(false);
+                },
                 settings.AuditQueue, rawEndpointFactory, errorHandlingPolicy, OnCriticalError);
 
             failedImporter = new ImportFailedAudits(documentStore, ingestor, rawEndpointFactory);
@@ -87,7 +108,14 @@ namespace ServiceControl.Audit.Auditing
                 FullMode = BoundedChannelFullMode.Wait
             });
 
-            ingestionWorker = Task.Run(() => Loop(), CancellationToken.None);
+            metadataEnricher = new AuditContextMetadataEnricher(bodyStorageEnricher, enrichers);
+            SingleAuditIngestor CreateIngestor()
+            {
+                var singleAuditPersister = new SingleAuditPerister(documentStore, settings.AuditRetentionPeriod);
+                var singleAuditIngestor = new SingleAuditIngestor(metadataEnricher, singleAuditPersister);
+                return singleAuditIngestor;
+            }
+            ingestionWorker = Task.Run(() => ProcessSingleAuditLoop(CreateIngestor), CancellationToken.None);
         }
 
         Task OnCriticalError(string failure, Exception arg2)
@@ -98,15 +126,61 @@ namespace ServiceControl.Audit.Auditing
 
         public Task Start(IMessageSession session)
         {
+            metadataEnricher.Initialize(session);
             auditPersister.Initialize(session);
             return watchdog.Start();
         }
 
         public async Task Stop()
         {
+            shuttingDown = true;
             await watchdog.Stop().ConfigureAwait(false);
             channel.Writer.Complete();
             await ingestionWorker.ConfigureAwait(false);
+        }
+
+        async Task ProcessSingleAuditLoop(Func<SingleAuditIngestor> ingestorFactory)
+        {
+            while (!shuttingDown)
+            {
+                using (var singleIngestor = ingestorFactory())
+                {
+                    await IngestMessages(singleIngestor)
+                        .ConfigureAwait(false);
+                }
+            }
+        }
+
+        async Task IngestMessages(SingleAuditIngestor singleIngestor)
+        {
+            while (await channel.Reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                if (channel.Reader.TryRead(out var context))
+                {
+                    try
+                    {
+                        await singleIngestor.Ingest(context).ConfigureAwait(false);
+                        if (!context.GetTaskCompletionSource().TrySetResult(true))
+                        {
+                            log.Warn($"Failed to mark completion of processing for {context.MessageId}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!context.GetTaskCompletionSource().TrySetException(ex))
+                        {
+                            log.Warn($"Failed to mark failure to complete processing for {context.MessageId}");
+                        }
+
+                        if (ex is RavenException ravenEx)
+                        {
+                            log.Warn("Persistence failure, restarting persistence", ravenEx);
+                            return;
+                        }
+                    }
+                }
+            }
+
         }
 
         async Task Loop()
