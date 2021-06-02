@@ -22,8 +22,6 @@
             {
                 try
                 {
-                    await initialized.ConfigureAwait(false);
-
                     await Task.Delay(due, token).ConfigureAwait(false);
 
                     while (!token.IsCancellationRequested)
