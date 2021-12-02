@@ -22,6 +22,8 @@ jobs:
 
       - name: Build
         working-directory: src
+        env:
+          CI: "" # trick it
         run: msbuild ServiceControl.sln /t:Build /p:Configuration=Release
 
       - name: Docker Build
