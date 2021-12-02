@@ -1,0 +1,35 @@
+name: SQS Docker Build
+
+on:
+  push:
+    # Publish these branches,
+    branches:
+      - master
+      - docker #temp
+
+jobs:
+  build:
+    runs-on: windows-2019
+    steps:
+      - uses: actions/checkout@v2
+      - uses: nuget/setup-nuget@v1
+      - uses: actions/setup-dotnet@v1
+      - uses: microsoft/setup-msbuild@v1.1
+
+      - name: Restore
+        working-directory: src
+        run: nuget restore ServiceControl.sln
+
+      - name: Build
+        working-directory: src
+        run: msbuild ServiceControl.sln /t:Build /p:Configuration=Release
+
+      - name: Docker Build
+        working-directory: src/docker
+        run: |
+          docker build -f .\servicecontrol.amazonsqs-windows.dockerfile -t particular/servicecontrol.amazonsqs-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.init-windows.dockerfile -t particular/servicecontrol.amazonsqs.init-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.audit-windows.dockerfile -t particular/servicecontrol.amazonsqs.audit-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.audit.init-windows.dockerfile -t particular/servicecontrol.amazonsqs.audit.init-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.monitoring-windows.dockerfile -t particular/servicecontrol.amazonsqs.monitoring-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.monitoring.init-windows.dockerfile -t particular/servicecontrol.amazonsqs.monitoring.init-windows ./../
