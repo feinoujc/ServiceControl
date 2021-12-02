@@ -2,10 +2,10 @@ name: SQS Docker Build
 
 on:
   push:
-    # Publish these branches,
-    branches:
-      - master
-      - docker #temp
+    # # Publish these branches,
+    # branches:
+    #   - master
+    #   - docker #temp
 
 jobs:
   build:
