@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+    branches:
+      - ncarb-master
+env:
+  DOTNET_NOLOGO: true
+jobs:
+  build:
+    runs-on: windows-2019
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2.3.4
+        with:
+          fetch-depth: 0
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v1.8.2
+        with:
+          dotnet-version: 5.0.x
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.1
+      - name: Build
+        run: msbuild src -p:Configuration=Release -restore -m -verbosity:minimal
+      - name: Docker Build
+        working-directory: src/docker
+        run: |
+          docker build -f .\servicecontrol.amazonsqs-windows.dockerfile -t particular/servicecontrol.amazonsqs-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.init-windows.dockerfile -t particular/servicecontrol.amazonsqs.init-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.audit-windows.dockerfile -t particular/servicecontrol.amazonsqs.audit-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.audit.init-windows.dockerfile -t particular/servicecontrol.amazonsqs.audit.init-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.monitoring-windows.dockerfile -t particular/servicecontrol.amazonsqs.monitoring-windows ./../
+          docker build -f .\servicecontrol.amazonsqs.monitoring.init-windows.dockerfile -t particular/servicecontrol.amazonsqs.monitoring.init-windows ./../
